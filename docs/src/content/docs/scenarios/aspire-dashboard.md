@@ -21,11 +21,12 @@ Aspire is not a .NET thing — it's a **standalone dashboard for any app that sp
 - **Metrics** — counters (agents spawned, tokens consumed), histograms (latency), gauges (active sessions)
 - **Resources** — grouping by service and environment
 
-Squad's OTel integration exports OTLP/gRPC (the only protocol Aspire understands), so you get instant visibility into what your agents are doing.
+Squad's OTel integration exports OTLP/gRPC to the dashboard's gRPC listener.
+The dashboard also supports OTLP/HTTP, but that is not the protocol used here.
 
 ---
 
-## 2. Launch the Aspire Container
+## 2. Launch the Standalone Dashboard
 
 The easiest way is the built-in `squad aspire` command:
 
@@ -33,15 +34,51 @@ The easiest way is the built-in `squad aspire` command:
 squad aspire
 ```
 
-This will:
-1. Pull the Aspire dashboard image: `mcr.microsoft.com/dotnet/aspire-dashboard:latest`
-2. Start the container on **port 18888** (UI) and **port 4317** (OTLP gRPC)
-3. Print the dashboard URL (usually `http://localhost:18888`)
+Install the official [Aspire CLI 17.0.0 bundle](https://aspire.dev/get-started/install-cli/)
+(17 or newer is supported) and make `aspire` available on `PATH`. Squad uses the
+documented `aspire dashboard run` command, not `aspire run`, a local AppHost,
+`dotnet run`, a global .NET tool, or an obsolete Aspire workload. Docker is not
+required for this default path. There is no automatic Docker/CLI fallback.
 
-**Behind the scenes**, the container runs with:
+The equivalent standalone command is:
+
 ```bash
-docker run -d \
-  --name aspire-dashboard \
+aspire dashboard run --frontend-url http://localhost:18888 \
+  --otlp-grpc-url http://localhost:4317 --otlp-http-url "" \
+  --allow-anonymous --persistence None --non-interactive --nologo
+```
+
+This keeps the existing **18888 UI**, **4317 OTLP/gRPC**, anonymous local
+development access and ephemeral telemetry history. OTLP/HTTP is disabled for
+this consumer, rather than opening an additional port. Output is forwarded to
+the terminal; Ctrl+C stops the child process. An early process exit or startup
+error is reported without waiting indefinitely or claiming a successful launch.
+Missing prerequisites, spawn errors, nonzero exits and unexpected child signals
+set a failing command exit status; requested SIGINT/SIGTERM shutdown stays successful.
+
+Use `squad aspire --port 19999` to change the host UI port; OTLP/gRPC remains
+on port 4317.
+
+Anonymous access is for local development only. Starting this dashboard does
+not instrument other applications or set environment variables in a different
+terminal; configure those exporters as shown in section 3.
+
+### Explicit legacy Docker option
+
+`squad aspire --docker` retains the existing Docker consumer, including its
+image, auth environment and OTLP mapping. Docker is required only for this
+explicit option.
+
+**Image upgrade hold (2026-11-18):** the intended image is
+`mcr.microsoft.com/aspire/dashboard:17.0`, but the checked MCR manifest returned
+`MANIFEST_UNKNOWN`. The legacy `dotnet/aspire-dashboard:latest` image remains
+held on its earlier line; this option is **not** an Aspire 17 image upgrade.
+Do not switch the image until the exact new tag is published.
+
+The equivalent container command is:
+```bash
+docker run --rm \
+  --name squad-aspire-dashboard \
   -p 18888:18888 \
   -p 4317:18889 \
   -e DASHBOARD__FRONTEND__AUTHMODE=Unsecured \

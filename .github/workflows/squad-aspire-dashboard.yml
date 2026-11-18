@@ -1,0 +1,47 @@
+name: Aspire dashboard PR checks
+
+on:
+  pull_request:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  aspire-command:
+    name: Compile CLI and test Aspire command
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Configure and verify job-local approved npm routing
+        shell: bash
+        run: |
+          printf '%s\n' \
+            'registry=https://packagefeedproxy.microsoft.io/npm/' \
+            'replace-registry-host=always' > .npmrc
+          test "$(npm config get registry)" = 'https://packagefeedproxy.microsoft.io/npm/'
+          test "$(npm config get replace-registry-host)" = 'always'
+
+      - name: Install locked workspace dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund --fetch-retries=0
+
+      - name: Compile SDK and CLI without root version or template hooks
+        run: |
+          npm run build --workspace @bradygaster/squad-sdk
+          npm run build --workspace @bradygaster/squad-cli
+
+      - name: Run only the Aspire command Vitest suite
+        run: npm test -- test/aspire-command.test.ts

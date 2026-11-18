@@ -277,8 +277,9 @@ const COMMAND_HELP: Record<string, HelpPrinter> = {
   aspire: (version) => {
     header('aspire', version, 'Launch the Aspire dashboard for observability');
     console.log(`Usage: squad aspire [options]\n`);
+    console.log(`Requires Aspire CLI 17+. Starts a standalone dashboard, not an AppHost.\n`);
     console.log(`Options:`);
-    console.log(`  ${BOLD}--docker${RESET}                    Force the Docker launch path`);
+    console.log(`  ${BOLD}--docker${RESET}                    Use the held legacy Docker image instead`);
     console.log(`  ${BOLD}--port <n>${RESET}                  Bind the dashboard to a specific port\n`);
   },
 
