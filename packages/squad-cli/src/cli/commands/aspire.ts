@@ -38,37 +38,30 @@ function commandExists(cmd: string): boolean {
   }
 }
 
-function isDotnetAspireAvailable(): boolean {
-  if (!commandExists('dotnet')) return false;
-  try {
-    const output = execSync('dotnet tool list -g', { encoding: 'utf8' });
-    if (output.toLowerCase().includes('aspire')) return true;
-  } catch {
-    // Ignore
-  }
-  try {
-    const workloads = execSync('dotnet workload list', { encoding: 'utf8' });
-    if (workloads.toLowerCase().includes('aspire')) return true;
-  } catch {
-    // Ignore
-  }
-  return false;
-}
-
 function isDockerAvailable(): boolean {
   return commandExists('docker');
+}
+
+function isAspireAvailable(): boolean {
+  try {
+    const output = execSync('aspire --version', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const version = /^(\d+)\.\d+\.\d+(?:\+[\w.-]+)?$/.exec(output.trim());
+    return version !== null && Number(version[1]) >= 17;
+  } catch {
+    return false;
+  }
 }
 
 // ============================================================================
 // Launch strategies
 // ============================================================================
 
-function launchWithDocker(): ChildProcess {
+function launchWithDocker(port: number): ChildProcess {
   console.log(`${DIM}Starting Aspire dashboard via Docker...${RESET}`);
   const child = spawn('docker', [
     'run', '--rm',
     '--name', ASPIRE_CONTAINER_NAME,
-    '-p', `${ASPIRE_DASHBOARD_PORT}:18888`,
+    '-p', `${port}:18888`,
     '-p', '4317:18889',
     '-e', 'DASHBOARD__FRONTEND__AUTHMODE=Unsecured',
     '-e', 'DASHBOARD__OTLP__AUTHMODE=Unsecured',
@@ -80,16 +73,21 @@ function launchWithDocker(): ChildProcess {
   return child;
 }
 
-function launchWithDotnet(): ChildProcess {
-  console.log(`${DIM}Starting Aspire dashboard via dotnet...${RESET}`);
-  const child = spawn('dotnet', [
-    'run', '--project', 'aspire',
-    '--', '--dashboard-port', String(ASPIRE_DASHBOARD_PORT),
+function launchWithAspire(port: number): ChildProcess {
+  console.log(`${DIM}Starting standalone Aspire dashboard via Aspire CLI...${RESET}`);
+  return spawn('aspire', [
+    'dashboard', 'run',
+    '--frontend-url', `http://localhost:${port}`,
+    '--otlp-grpc-url', ASPIRE_OTLP_ENDPOINT,
+    '--otlp-http-url', '',
+    '--allow-anonymous',
+    '--persistence', 'None',
+    '--non-interactive',
+    '--nologo',
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: false,
   });
-  return child;
 }
 
 // ============================================================================
@@ -97,9 +95,9 @@ function launchWithDotnet(): ChildProcess {
 // ============================================================================
 
 export interface AspireOptions {
-  /** Use Docker even if dotnet is available */
+  /** Explicitly use the held legacy Docker image instead of Aspire CLI 17+. */
   docker?: boolean;
-  /** Custom OTLP endpoint port */
+  /** Custom dashboard UI port; OTLP/gRPC remains on port 4317. */
   port?: number;
 }
 
@@ -117,23 +115,21 @@ export async function runAspire(options: AspireOptions = {}): Promise<void> {
   process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] = otlpEndpoint;
   console.log(`${DIM}OTLP endpoint: ${otlpEndpoint}${RESET}`);
 
-  // Determine launch strategy
-  const useDocker = options.docker || !isDotnetAspireAvailable();
-  let child: ChildProcess | undefined;
-
-  if (useDocker && isDockerAvailable()) {
-    child = launchWithDocker();
-  } else if (!useDocker && isDotnetAspireAvailable()) {
-    child = launchWithDotnet();
-  } else if (isDockerAvailable()) {
-    child = launchWithDocker();
-  } else {
-    console.log(`${RED}✗${RESET} Neither Docker nor Aspire workload found.`);
-    console.log(`\n  Install options:`);
-    console.log(`    ${BOLD}Docker:${RESET}  https://docker.com/get-started`);
-    console.log(`    ${BOLD}Aspire:${RESET}  dotnet workload install aspire\n`);
+  if (options.docker ? !isDockerAvailable() : !isAspireAvailable()) {
+    console.log(options.docker
+      ? `${RED}✗${RESET} Docker is required for squad aspire --docker.`
+      : `${RED}✗${RESET} Aspire CLI 17 or newer is required for the standalone dashboard.`);
+    console.log(options.docker
+      ? `    ${BOLD}Docker:${RESET}  https://docker.com/get-started`
+      : `    ${BOLD}Aspire CLI:${RESET}  https://aspire.dev/get-started/install-cli/`);
+    if (!options.docker) {
+      console.log(`    Use squad aspire --docker only to opt into the held legacy dashboard image.`);
+    }
+    process.exitCode = 1;
     return;
   }
+
+  const child = options.docker ? launchWithDocker(port) : launchWithAspire(port);
 
   // Wire up output
   child.stdout?.on('data', (data: Buffer) => {
@@ -146,33 +142,47 @@ export async function runAspire(options: AspireOptions = {}): Promise<void> {
     if (text) console.log(`${YELLOW}[aspire]${RESET} ${text}`);
   });
 
-  child.on('error', (err: Error) => {
-    console.error(`${RED}✗${RESET} Failed to start Aspire: ${err.message}`);
-  });
-
-  // Give the dashboard a moment to start
-  await new Promise<void>((resolve) => setTimeout(resolve, 2000));
-
-  console.log(`\n${GREEN}✓${RESET} Aspire dashboard launching`);
-  console.log(`  ${BOLD}Dashboard:${RESET}  http://localhost:${port}`);
-  console.log(`  ${BOLD}OTLP gRPC:${RESET}  localhost:4317`);
-  console.log(`\n${DIM}Squad OTel will automatically export to this endpoint.${RESET}`);
-  console.log(`${DIM}Press Ctrl+C to stop.${RESET}\n`);
-
-  // Keep alive until Ctrl+C
   return new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      console.log(`\n${GREEN}✓${RESET} Aspire dashboard launching`);
+      console.log(`  ${BOLD}Dashboard:${RESET}  http://localhost:${port}`);
+      console.log(`  ${BOLD}OTLP gRPC:${RESET}  localhost:4317`);
+      console.log(`\n${DIM}Squad OTel will automatically export to this endpoint.${RESET}`);
+      console.log(`${DIM}Press Ctrl+C to stop.${RESET}\n`);
+    }, 2000);
+
+    const finish = () => {
+      clearTimeout(timer);
+      process.removeListener('SIGINT', shutdown);
+      process.removeListener('SIGTERM', shutdown);
+      child.removeListener('close', onClose);
+      child.removeListener('error', onError);
+      resolve();
+    };
     const shutdown = () => {
       console.log(`\n${DIM}🔭 Aspire dashboard stopping...${RESET}`);
-      child?.kill();
-      resolve();
+      child.kill();
+      finish();
+    };
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (code === 0) {
+        console.log(`${DIM}Aspire process exited.${RESET}`);
+      } else {
+        const reason = signal ? `after signal ${signal}` : `with code ${code ?? 'unknown'}`;
+        console.error(`${RED}✗${RESET} Aspire dashboard exited ${reason}.`);
+        process.exitCode = 1;
+      }
+      finish();
+    };
+    const onError = (err: Error) => {
+      console.error(`${RED}✗${RESET} Failed to start Aspire: ${err.message}`);
+      process.exitCode = 1;
+      finish();
     };
 
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
-
-    child?.on('close', () => {
-      console.log(`${DIM}Aspire process exited.${RESET}`);
-      resolve();
-    });
+    child.once('close', onClose);
+    child.once('error', onError);
   });
 }
